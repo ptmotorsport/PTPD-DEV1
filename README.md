@@ -1,4 +1,7 @@
-# PT Motorsport PDM System
+# PTPD-DEV1
+
+## PT Motorsport - Power Distribution - Development Board
+
 
 Professional Power Distribution Module (PDM) system for motorsport applications, featuring an Arduino UNO R4 Minima-based embedded controller with CAN bus integration and comprehensive desktop management software.
 
