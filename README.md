@@ -39,7 +39,7 @@ Schematics are delivered to all customers purchasing a PTPD-DEV1
 
 The current state of the PTPD-DEV firmware is at feature parity with the PTPDSS4 (v1.3 RC1)
 
-###Firmware features
+### Firmware features
 
 - Serial Command Line for Programming
   - Open a Serial Monitor and type HELP to see the full list of commands
@@ -65,15 +65,46 @@ The current state of the PTPD-DEV firmware is at feature parity with the PTPDSS4
   - CAN keypad watchdog (shuts down all outputs if multiple keypad heartbeats are missed; switch-mode dependent)
   - CAN message watchdog (shuts down all outputs if multiple CAN messages are missed; switch-mode dependent)
   - EEPROM parameter storage with CRC-16 validation; outputs will not activate with CRC error.
+ 
+- CANbus features
+  - User Configurable CAN Speeds
+  - User Configurable Keypad Node ID
+  - User Configurable telemety Node ID
+  - User Configurable CAN message recevie address
+  - Telemetry output (Output currents, Output status, Battery Voltage)
 
 ## Configuration Software
 
 This repo include some python based software that provides a GUI for real-time monitoring, configuration management and firmware updates via USB. This software really needs some work but a lot of the features need to be simultaniously done in the firmware and software.
 
+## Exceptions to PTPDSS Parity
+
+There are some exceptions to PTPDSS hardware partiy that should be noted
+ - Temp Sensor
+  - The temp sensors on the PTPDSS v1.3 is not the same at the sensor on the PTPD-DEV1. We're getting good result with the new temp sensor on the PTPD-DEV1 so we're likely to use that moving forward
+
+- Power Switches
+  - Power swtiches on the Dev board are a BTS443P and the PTPDSS4 uses a BTS50085, they function the same but have different calibrations for the current sensing.
+
+- CAN Terminating Resistor
+  - On the PTPD-DEV1 there is a solder bridge, on the PTPDSS4 there is a Analog Switch conencted to D12 that toggles the CAN Terminating resistor.
+
+- Extra Analog inputs
+  - The PTPDSS has access to more analog inputs than are avaliable on the Arduino Uno R4 Minima. These analog inputs aren't assigned any purpose yet though.
+ 
 
 
 
-##Licence
+
+## Thank you!
+Projects like these are made possible by your support through purchases on the PT Motorsport AU website.
+
+www.ptmotorsport.com.au
+
+Thank you for your support! We greatly appreciate you spreading the word about our products and services to your fellow motorsport enthusiasts.
+
+
+## Licence
 Copyright (c) 2025 - PT Motorsport AU Pty Ltd
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
