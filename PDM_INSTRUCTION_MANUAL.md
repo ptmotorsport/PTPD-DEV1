@@ -1,5 +1,11 @@
 # PDM (Power Distribution Module) System - Complete Instruction Manual
 
+---
+Co-Pilot wrote this and no checks or changes have been made yet 
+TODO: Read and check this documentation for factuality and appropriateness
+
+---
+
 ## Table of Contents
 1. [System Overview](#system-overview)
 2. [Hardware Configuration](#hardware-configuration)
