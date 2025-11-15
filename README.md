@@ -2,7 +2,7 @@
 
 ## PT Motorsport - Power Distribution - Development Board
 
-Thank you for your interested in another PT Motorsport Open Source Project! We're so glad you're here and looking forward to seeing what you can produce! Make sure you tag us @ptmotorsportau to show off your creations!
+Thank you for your interest in another PT Motorsport Open Source Project! We're so glad you're here and looking forward to seeing what you can produce! Make sure you tag us @ptmotorsportau to show off your creations!
 
 This project is code to support the PTPD-DEV1 Development board operating in conjuction with an Arduino UNO R4 Minima
 
@@ -46,14 +46,30 @@ The current state of the PTPD-DEV firmware is at feature parity with the PTPDSS4
     - VBATT voltage levels reported over CAN
     - VBATT voltage level changes Neo Pixel colour
   - Board Temperature monitoring
-    - Board Temp  
+    - Configurable settings for warnings and limits for board temperature
+    - Board Temp influences Temp LED Colour
+- Flexible Output Configurations
+ -  Configurable Inrush Current and Time limits
+ -  Configurable operating current limits
+ -  Configurable under current warning
+ -  Current limits trip emulate physical fuse behavior (I²t fusing algorithm)
+ -  Channel grouping for more current or synchronised operation
+ -  Latch or momentary modes
+-  Smart Mode switching - Automatically changes between three modes
+ -  CANbus Keypad (CANopen) mode, works with 4 button CAN keypad (e.g. Blink Marine PKP2200si)
+ -  Local digital push buttons
+ -  CANbus message mode, Configurable base address (default 0x680)
+-  Safety Features
+ - Hardware Watchdog (automatically senses hardware lockups and code loops then reboots)
+ - CAN keypad watch dog (shuts down all outputs if multiple keypad heartbeats are missed) (Switch mode dependant)
+ - CAN Message watch dog (shuts down all outputs if multiple CAN messages are missed) (Switch mode dependant)
+ - EEPROM parameter storage with CRC-16 validation, outputs will not activate with CRC error.
+
+## Configuration Software
+
+This repo include some python based software that provides a GUI for real-time monitoring, configuration management and firmware updates via USB. This software really needs some work but a lot of the features need to be simultaniously done in the firmware and software.
 
 
-
-
-**Software**: Python-based GUI for real-time monitoring, configuration management, and firmware updates via USB serial interface.
-
-**Key Features**: Live diagnostics, automated protection systems, hardware watchdog, configurable thresholds, and professional operator interface.
 
 
 ##Licence
