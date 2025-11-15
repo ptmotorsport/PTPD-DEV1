@@ -39,31 +39,32 @@ Schematics are delivered to all customers purchasing a PTPD-DEV1
 
 The current state of the PTPD-DEV firmware is at feature parity with the PTPDSS4 (v1.3 RC1)
 
-### Firmware features
-  - Serial Command Line for Programming
-    - Open a Serial Monitor and type HELP to see the full list of commands
-  -  Battery Voltage Monitoring
-    - VBATT voltage levels reported over CAN
-    - VBATT voltage level changes Neo Pixel colour
-  - Board Temperature monitoring
-    - Configurable settings for warnings and limits for board temperature
-    - Board Temp influences Temp LED Colour
+###Firmware features
+
+- Serial Command Line for Programming
+  - Open a Serial Monitor and type HELP to see the full list of commands
+- Battery Voltage Monitoring
+  - VBATT voltage levels reported over CAN
+  - VBATT voltage level changes Neo Pixel colour
+- Board Temperature Monitoring
+  - Configurable settings for warnings and limits for board temperature
+  - Board temperature influences Temp LED colour
 - Flexible Output Configurations
- -  Configurable Inrush Current and Time limits
- -  Configurable operating current limits
- -  Configurable under current warning
- -  Current limits trip emulate physical fuse behavior (I²t fusing algorithm)
- -  Channel grouping for more current or synchronised operation
- -  Latch or momentary modes
--  Smart Mode switching - Automatically changes between three modes
- -  CANbus Keypad (CANopen) mode, works with 4 button CAN keypad (e.g. Blink Marine PKP2200si)
- -  Local digital push buttons
- -  CANbus message mode, Configurable base address (default 0x680)
--  Safety Features
- - Hardware Watchdog (automatically senses hardware lockups and code loops then reboots)
- - CAN keypad watch dog (shuts down all outputs if multiple keypad heartbeats are missed) (Switch mode dependant)
- - CAN Message watch dog (shuts down all outputs if multiple CAN messages are missed) (Switch mode dependant)
- - EEPROM parameter storage with CRC-16 validation, outputs will not activate with CRC error.
+  - Configurable inrush current and time limits
+  - Configurable operating current limits
+  - Configurable under-current warning
+  - Current-limit trip emulates physical fuse behavior (I²t fusing algorithm)
+  - Channel grouping for more current or synchronised operation
+  - Latch or momentary modes
+- Smart Mode Switching – automatically changes between three modes:
+  - CANbus Keypad (CANopen) mode; works with 4-button CAN keypad (e.g., Blink Marine PKP2200si)
+  - Local digital push buttons
+  - CANbus message mode; configurable base address (default 0x680)
+- Safety Features
+  - Hardware watchdog (automatically senses hardware lockups and code loops, then reboots)
+  - CAN keypad watchdog (shuts down all outputs if multiple keypad heartbeats are missed; switch-mode dependent)
+  - CAN message watchdog (shuts down all outputs if multiple CAN messages are missed; switch-mode dependent)
+  - EEPROM parameter storage with CRC-16 validation; outputs will not activate with CRC error.
 
 ## Configuration Software
 
