@@ -1,4 +1,6 @@
 # Serial Logging System - Implementation Summary
+Co-Pilot wrote this and no checks or changes have been made yet
+TODO: Read and check this documentation for factuality and appropriateness 
 
 ## Overview
 A comprehensive serial logging system has been implemented with three configurable levels to control the amount of information sent to the serial terminal.
