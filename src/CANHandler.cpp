@@ -54,15 +54,9 @@ void CANHandler::begin() {
   String startMsgText = "Sent start message to keypad ID: 0x" + String(kpID, HEX);
   LOG_ALWAYS(startMsgText);
   
-  // Small delay to ensure CAN bus is stable
-  delay(10);
-  
   // Send backlight setting
   sendBacklightSetting();
   LOG_ALWAYS("Sent backlight setting");
-  
-  // Small delay between messages
-  delay(10);
   
   // Send heartbeat enable
   uint8_t hbEn[8] = {0x2B,0x17,0x10,0x00,0xF4,0x01,0x00,0x00};

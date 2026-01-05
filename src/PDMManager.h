@@ -65,6 +65,8 @@ public:
   static uint8_t getPDMNodeID();
   static void setKeypadNodeID(uint8_t id);
   static uint8_t getKeypadNodeID();
+  static void setCANTermEnabled(bool enabled);
+  static bool getCANTermEnabled();
 
   // Telemetry helpers
   static float readBatteryVoltage();

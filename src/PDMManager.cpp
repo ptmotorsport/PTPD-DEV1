@@ -5,7 +5,7 @@
 #include <Arduino.h>
 
 // -----------------------------------------------------------------------------
-// Temperature sensor: TMP235A2DBZR on A4
+// Temperature sensor: LM335DT on A4 with 2k pullup
 // Uncomment to bypass temperature sensor error detection while troubleshooting
 // #define BYPASS_TEMP_SENSOR_ERROR
 
@@ -25,6 +25,7 @@ static const int    ADDR_GROUP_ARRAY       = ADDR_MODE_ARRAY +     4*sizeof(uint
 static const int    ADDR_CAN_SPEED         = ADDR_GROUP_ARRAY +    4*sizeof(uint8_t);
 static const int    ADDR_PDM_NODEID        = ADDR_CAN_SPEED   +    sizeof(uint8_t);
 static const int    ADDR_KP_KEYNODE        = ADDR_PDM_NODEID  +    sizeof(uint8_t);
+static const int    ADDR_CAN_TERM          = ADDR_KP_KEYNODE  +    sizeof(uint8_t);
 
 // -----------------------------------------------------------------------------
 // Defaults
@@ -34,6 +35,7 @@ static unsigned long inrushTimeLimits[4]    = {1000,1000,1000,1000};
 static float         underWarnThresholds[4] = {0.10f,0.10f,0.10f,0.10f};
 static float         tempWarnThreshold      = 70.0f;
 static float         tempTripThreshold      = 85.0f;
+static float         tempOffset             = -20.0f;  // LM335DT calibration offset in °C
 
 static OutputMode    outputMode[4]    = {
   MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH
@@ -43,6 +45,7 @@ static uint8_t       outputGroup[4]   = {1,2,3,4};
 static uint16_t      canSpeedKbps     = 1000;
 static uint8_t       pdmNodeID        = 0x15;
 static uint8_t       keypadNodeID     = 0x15;
+static bool          canTermEnabled   = true;  // CAN termination default ON
 uint16_t PDMManager::digitalOutCobId = 0x680;
 
 // -----------------------------------------------------------------------------
@@ -336,25 +339,27 @@ void PDMManager::update() {
   lastUpdate = now;
 
   // --- Enhanced temperature sensor reading with filtering ---
-  // TMP235A2DBZR: 10mV/°C, 500mV offset at 0°C
-  // Temperature (°C) = (Vout - 0.5V) / 0.01V
+  // LM335DT: 10mV/K, outputs absolute temperature in Kelvin
+  // Voltage = Temperature(K) * 10mV = (Temperature(°C) + 273.15) * 10mV
+  // At 25°C: V = 298.15K * 10mV = 2.9815V
+  // Temperature (°C) = (Vout / 0.01) - 273.15
   int rawT = analogRead(A4);  // Temperature sensor on A4
   float vT = rawT / float(analogResolution) * voltageReference;
   
-  // Calculate temperature from TMP235A2DBZR
-  // Valid output range: 0.1V (-40°C) to 2.0V (+150°C)
+  // Calculate temperature from LM335DT
+  // Valid output range: ~2.33V (-40°C = 233.15K) to ~4.23V (+150°C = 423.15K)
   float rawTemperature;
-  if (vT < 0.05f || vT > 2.1f) {
+  if (vT < 2.0f || vT > 4.5f) {
     // Sensor disconnected or out of range
     rawTemperature = -999.0f;  // Invalid marker
   } else {
-    // Convert voltage to temperature: T = (V - 0.5) / 0.01
-    rawTemperature = (vT - 0.5f) / 0.01f;
+    // Convert voltage to temperature: T(°C) = (V / 0.01) - 273.15
+    rawTemperature = (vT / 0.01f) - 273.15f + tempOffset;
   }
   
   // Initialize filtered temperature on first reading
   if (!tempSensorInitialized) {
-    // Only initialize if the reading seems reasonable (-40°C to 150°C range for TMP235)
+    // Only initialize if the reading seems reasonable (-40°C to 150°C range for LM335)
     if (rawTemperature >= -40.0f && rawTemperature <= 150.0f) {
       filteredTemperature = rawTemperature;
       tempSensorInitialized = true;
@@ -375,9 +380,9 @@ void PDMManager::update() {
   float tempDt = (now - lastTempUpdate) / 1000.0f;
   if (tempDt > 0.1f) {  // Only update every 100ms minimum
     
-    // Check if raw reading is reasonable for TMP235 (-40°C to +150°C, 0.1V to 2.0V)
+    // Check if raw reading is reasonable for LM335 (-40°C to +150°C, 2.33V to 4.23V)
     bool rawReadingValid = (rawTemperature >= -40.0f && rawTemperature <= 150.0f && 
-                           vT > 0.05f && vT < 2.1f);  // Voltage should be in valid range
+                           vT > 2.0f && vT < 4.5f);  // Voltage should be in valid range
     
     if (rawReadingValid) {
       // Calculate maximum allowed change based on time elapsed
@@ -653,6 +658,7 @@ void PDMManager::saveConfig() {
   EEPROM.put(ADDR_CAN_SPEED,  (uint8_t)canSpeedKbps);
   EEPROM.put(ADDR_PDM_NODEID, pdmNodeID);
   EEPROM.put(ADDR_KP_KEYNODE, keypadNodeID);
+  EEPROM.put(ADDR_CAN_TERM,   (uint8_t)(canTermEnabled ? 1 : 0));
   
   // Calculate and save CRC for data integrity verification
   uint16_t crc = calculateConfigCRC();
@@ -682,13 +688,15 @@ void PDMManager::loadConfig() {
       outputMode[i]  = (mm==MODE_MOMENTARY?MODE_MOMENTARY:MODE_LATCH);
       outputGroup[i] = gg;
     }
-    uint8_t sp,p,k;
+    uint8_t sp,p,k,ct;
     EEPROM.get(ADDR_CAN_SPEED,  sp);
     EEPROM.get(ADDR_PDM_NODEID, p);
     EEPROM.get(ADDR_KP_KEYNODE, k);
+    EEPROM.get(ADDR_CAN_TERM,   ct);
     canSpeedKbps  = (sp==125||sp==250||sp==500||sp==1000)?sp:1000;
     pdmNodeID     = p;
     keypadNodeID  = k;
+    canTermEnabled = (ct == 1);
     
     // Verify CRC to ensure data integrity
     uint16_t storedCRC;
@@ -779,6 +787,14 @@ void PDMManager::setKeypadNodeID(uint8_t id) {
 }
 uint8_t PDMManager::getKeypadNodeID() { return keypadNodeID; }
 
+void PDMManager::setCANTermEnabled(bool enabled) {
+  canTermEnabled = enabled;
+  digitalWrite(12, enabled ? LOW : HIGH);  // LOW=ON, HIGH=OFF
+  Serial.print(F("OK: CAN Termination "));
+  Serial.println(enabled ? F("ON") : F("OFF"));
+}
+bool PDMManager::getCANTermEnabled() { return canTermEnabled; }
+
 float PDMManager::readBatteryVoltage() {
   int raw=analogRead(A5);  // Battery voltage sensing moved to A5 on new hardware
   float v = raw/float(analogResolution)*voltageReference;
@@ -819,6 +835,7 @@ void PDMManager::printConfig() {
   Serial.print(F("PDM NodeID=0x")); Serial.println(pdmNodeID,HEX);
   Serial.print(F("Keypad NodeID=0x")); Serial.println(keypadNodeID,HEX);
   Serial.print(F("CAN Rx Address=0x")); Serial.println(digitalOutCobId,HEX);
+  Serial.print(F("CAN Termination: ")); Serial.println(canTermEnabled ? F("ON") : F("OFF"));
   Serial.println(F("---------------------------"));
 }
 

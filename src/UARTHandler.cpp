@@ -267,6 +267,11 @@ void UARTHandler::process() {
     
     Serial.println(F("=============================="));
   }
+  else if (cmd=="CANTERM") {
+    // Toggle CAN termination resistor (D12: HIGH=OFF, LOW=ON)
+    bool current = PDMManager::getCANTermEnabled();
+    PDMManager::setCANTermEnabled(!current);
+  }
   else if (cmd=="HELP" || cmd=="?") {
     Serial.println(F("===== PDM CLI Commands ====="));
     Serial.println(F("OC <ch> <amps>          - Set overcurrent threshold"));
@@ -288,6 +293,7 @@ void UARTHandler::process() {
     Serial.println(F("STATUS                  - Display system status"));
     Serial.println(F("SAVE                    - Save config to EEPROM"));
     Serial.println(F("LOAD                    - Load config from EEPROM"));
+    Serial.println(F("CANTERM                 - Toggle CAN termination resistor"));
     Serial.println(F("HELP/?                  - Show this help"));
     Serial.println(F("============================"));
   }
