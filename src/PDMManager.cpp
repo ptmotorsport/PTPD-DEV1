@@ -53,7 +53,7 @@ uint16_t PDMManager::digitalOutCobId = 0x680;
 static const float   voltageReference = 5.0f;   // Arduino Uno R4 Minima uses 5V reference for most analog pins
 static const int     analogResolution = 1023;   // Arduino Uno R4 Minima is 10-bit ADC (0-1023)
 static const float   ris              = 1000.0f;
-static const float   kILIS            = 8200.0f; // Current sensor gain factor for DEV1.3 board (BTS443P)
+static const float   kILIS            = 13000.0f; // Current sensor gain factor for PTPDSS4 (BTS50085)
 
 // -----------------------------------------------------------------------------
 // Dynamic
@@ -88,8 +88,8 @@ static const uint8_t extSwitchPins[4] = {0, 1, 2, 3};  // D0-D3 for external swi
 static const unsigned long extDebounceMs = 50;
 static const uint8_t switchPins[4] = {6,9,10,11};  // D6, D9, D10, D11 for power outputs
 
-// Current sensing pin mapping - DEV1.3 board layout
-static const uint8_t currentSensePins[4] = {0, 1, 2, 3}; 
+// Current sensing pin mapping - PTPDSS4-1.3 board layout
+static const uint8_t currentSensePins[4] = {1, 2, 3, 0}; 
 
 // -----------------------------------------------------------------------------
 // CRC-16 helper functions for EEPROM validation
