@@ -8,7 +8,7 @@
 
 static unsigned long lastCANLedMs = 0;
 static const unsigned long CAN_LED_PERIOD = 100;  // 10 Hz (was 67ms ≈15Hz)
-LEDState keypadStates[4];
+LEDState keypadStates[NUM_CHANNELS];
 
 #define NEOPIXEL_PIN_1   7
 #define NEOPIXEL_PIN_2   8
@@ -60,8 +60,8 @@ void updateNeoPixels() {
   strip1.setPixelColor(3, strip1.Color(0,0,0));
   strip2.setPixelColor(3, strip2.Color(0,0,0));
 
-  // Pixels 4–7: channel 1–4 states
-  LEDState states[4];
+  // Pixels 4–7: channel 1–4 states (first 4 channels only for 8-pixel display)
+  LEDState states[NUM_CHANNELS];
   PDMManager::getLEDStates(states);
   for (uint8_t ch = 0; ch < 4; ch++) {
     uint8_t pix = 4 + ch;
@@ -145,7 +145,7 @@ if (now - lastCANLedMs >= CAN_LED_PERIOD) {
 
   // 3. If any channel needs flashing, send the blink mask (0x300 + NodeID)
   bool anyFlash = false;
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < NUM_CHANNELS; ++i) {
     if (keypadStates[i] == LED_STATE_RED_FLASH) {
       anyFlash = true;
       break;

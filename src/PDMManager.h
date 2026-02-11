@@ -3,6 +3,8 @@
 
 #include <Arduino.h>
 
+#define NUM_CHANNELS 10
+
 enum LEDState {
   LED_STATE_OFF = 0,
   LED_STATE_GREEN,
@@ -35,7 +37,7 @@ public:
   static void handleButtonState(uint8_t ch, bool pressed);
 
   // Retrieve for CANHandler / dashboard
-  static void getLEDStates(LEDState s[4]);
+  static void getLEDStates(LEDState s[NUM_CHANNELS]);
   static bool isChannelActive(uint8_t ch);    // Get channel ON/OFF status
 
   // CAN Msg Rx control (DIGOUT)

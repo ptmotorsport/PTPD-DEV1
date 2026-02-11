@@ -204,12 +204,13 @@ void UARTHandler::process() {
     Serial.println(F("CH | ON/OFF | Current | Mode | Group | LED State | Warnings/Faults"));
     Serial.println(F("---|--------|---------|------|-------|-----------|------------------"));
     
-    LEDState ledStates[4];
+    LEDState ledStates[NUM_CHANNELS];
     PDMManager::getLEDStates(ledStates);
     
-    for (uint8_t ch = 0; ch < 4; ch++) {
+    for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
       Serial.print(ch + 1);
-      Serial.print(F("  | "));
+      if (ch < 9) Serial.print(F(" "));  // Add space for single digit channels
+      Serial.print(F(" | "));
       
       // Channel ON/OFF status
       if (PDMManager::isChannelActive(ch)) {

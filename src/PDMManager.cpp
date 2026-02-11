@@ -3,9 +3,16 @@
 #include "Logger.h"
 #include <EEPROM.h>
 #include <Arduino.h>
+#include <Adafruit_ADS1X15.h>
 
 // -----------------------------------------------------------------------------
-// Temperature sensor: TMP235A2DBZR on A4
+// ADS1115 I2C ADC for temperature, battery voltage, IS9, IS10
+Adafruit_ADS1115 ads;  // Default I2C address 0x48 (1001000b)
+static bool adsInitialized = false;
+static float vbattCalibration = 1.0f;  // Calibration factor for battery voltage
+
+// -----------------------------------------------------------------------------
+// Temperature sensor: TMP235A2DBZR on ADS1115 AIN0
 // Uncomment to bypass temperature sensor error detection while troubleshooting
 // #define BYPASS_TEMP_SENSOR_ERROR
 
@@ -15,30 +22,31 @@ static const int    ADDR_MAGIC             = 0;
 static const uint16_t EEPROM_MAGIC         = 0xBEEF;
 static const int    ADDR_CRC               = ADDR_MAGIC + sizeof(uint16_t);
 static const int    ADDR_OC_ARRAY          = ADDR_CRC + sizeof(uint16_t);
-static const int    ADDR_INRUSH_ARRAY      = ADDR_OC_ARRAY +       4*sizeof(float);
-static const int    ADDR_INRUSHTIME_ARRAY  = ADDR_INRUSH_ARRAY +   4*sizeof(unsigned long);
-static const int    ADDR_UNDERWARN_ARRAY   = ADDR_INRUSHTIME_ARRAY +4*sizeof(float);
-static const int    ADDR_TEMPWARN          = ADDR_UNDERWARN_ARRAY +4*sizeof(float);
+static const int    ADDR_INRUSH_ARRAY      = ADDR_OC_ARRAY +       NUM_CHANNELS*sizeof(float);
+static const int    ADDR_INRUSHTIME_ARRAY  = ADDR_INRUSH_ARRAY +   NUM_CHANNELS*sizeof(unsigned long);
+static const int    ADDR_UNDERWARN_ARRAY   = ADDR_INRUSHTIME_ARRAY +NUM_CHANNELS*sizeof(float);
+static const int    ADDR_TEMPWARN          = ADDR_UNDERWARN_ARRAY +NUM_CHANNELS*sizeof(float);
 static const int    ADDR_TEMPTTRIP         = ADDR_TEMPWARN +       sizeof(float);
 static const int    ADDR_MODE_ARRAY        = ADDR_TEMPTTRIP +      sizeof(float);
-static const int    ADDR_GROUP_ARRAY       = ADDR_MODE_ARRAY +     4*sizeof(uint8_t);
-static const int    ADDR_CAN_SPEED         = ADDR_GROUP_ARRAY +    4*sizeof(uint8_t);
+static const int    ADDR_GROUP_ARRAY       = ADDR_MODE_ARRAY +     NUM_CHANNELS*sizeof(uint8_t);
+static const int    ADDR_CAN_SPEED         = ADDR_GROUP_ARRAY +    NUM_CHANNELS*sizeof(uint8_t);
 static const int    ADDR_PDM_NODEID        = ADDR_CAN_SPEED   +    sizeof(uint8_t);
 static const int    ADDR_KP_KEYNODE        = ADDR_PDM_NODEID  +    sizeof(uint8_t);
+static const int    ADDR_ADS_VBATT_CALIB   = ADDR_KP_KEYNODE  +    sizeof(uint8_t);  // Battery voltage calibration
 
 // -----------------------------------------------------------------------------
 // Defaults
-static float         ocThresholds[4]        = {3,3,3,3};
-static float         inrushThresholds[4]    = {5,5,5,5};
-static unsigned long inrushTimeLimits[4]    = {1000,1000,1000,1000};
-static float         underWarnThresholds[4] = {0.10f,0.10f,0.10f,0.10f};
+static float         ocThresholds[NUM_CHANNELS]        = {3,3,3,3,3,3,3,3,3,3};
+static float         inrushThresholds[NUM_CHANNELS]    = {5,5,5,5,5,5,5,5,5,5};
+static unsigned long inrushTimeLimits[NUM_CHANNELS]    = {1000,1000,1000,1000,1000,1000,1000,1000,1000,1000};
+static float         underWarnThresholds[NUM_CHANNELS] = {0.10f,0.10f,0.10f,0.10f,0.10f,0.10f,0.10f,0.10f,0.10f,0.10f};
 static float         tempWarnThreshold      = 70.0f;
 static float         tempTripThreshold      = 85.0f;
 
-static OutputMode    outputMode[4]    = {
-  MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH
+static OutputMode    outputMode[NUM_CHANNELS]    = {
+  MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH,MODE_LATCH
 };
-static uint8_t       outputGroup[4]   = {1,2,3,4};
+static uint8_t       outputGroup[NUM_CHANNELS]   = {1,2,3,4,5,6,7,8,9,10};
 
 static uint16_t      canSpeedKbps     = 1000;
 static uint8_t       pdmNodeID        = 0x15;
@@ -54,17 +62,17 @@ static const float   kILIS            = 8200.0f; // Current sensor gain factor f
 
 // -----------------------------------------------------------------------------
 // Dynamic
-static float         overcurrentScore[4]    = {0,0,0,0};
-static float         inrushScore[4]         = {0,0,0,0};
-static unsigned long channelOnTime[4]       = {0,0,0,0};
-static bool          channelActive[4]       = {false,false,false,false};
-static bool          faultOvercurrent[4]    = {false,false,false,false};
-static bool          warningUndercurrent[4] = {false,false,false,false};
-static bool          faultThermal[4]        = {false,false,false,false};
-static bool          clearedFault[4]        = {false,false,false,false};
-static bool          resetButtonTiming[4]   = {false,false,false,false}; // Flag to reset button press timing when fault occurs
-static LEDState      currentLEDStates[4]    = {
-  LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF
+static float         overcurrentScore[NUM_CHANNELS]    = {0,0,0,0,0,0,0,0,0,0};
+static float         inrushScore[NUM_CHANNELS]         = {0,0,0,0,0,0,0,0,0,0};
+static unsigned long channelOnTime[NUM_CHANNELS]       = {0,0,0,0,0,0,0,0,0,0};
+static bool          channelActive[NUM_CHANNELS]       = {false,false,false,false,false,false,false,false,false,false};
+static bool          faultOvercurrent[NUM_CHANNELS]    = {false,false,false,false,false,false,false,false,false,false};
+static bool          warningUndercurrent[NUM_CHANNELS] = {false,false,false,false,false,false,false,false,false,false};
+static bool          faultThermal[NUM_CHANNELS]        = {false,false,false,false,false,false,false,false,false,false};
+static bool          clearedFault[NUM_CHANNELS]        = {false,false,false,false,false,false,false,false,false,false};
+static bool          resetButtonTiming[NUM_CHANNELS]   = {false,false,false,false,false,false,false,false,false,false}; // Flag to reset button press timing when fault occurs
+static LEDState      currentLEDStates[NUM_CHANNELS]    = {
+  LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF,LED_STATE_OFF
 };
 
 static float         lastTemperature        = 0.0f;
@@ -80,13 +88,28 @@ static uint8_t       badTempReadingCount    = 0;
 static const uint8_t maxBadReadings         = 3;      // Require multiple bad readings before fault
 
 // -----------------------------------------------------------------------------
-// Digital switch input pins (replacing analog MUX)
-static const uint8_t extSwitchPins[4] = {0, 1, 2, 3};  // D0-D3 for external switches
+// Digital switch input pins (10 switches total)
+static const uint8_t extSwitchPins[NUM_CHANNELS] = {
+  0, 1, 2, 3,           // D0-D3: Switches 1-4
+  A4, A5,               // A4-A5: Switches 5-6 (analog pins used as digital)
+  14, 15,               // D14-D15: Switches 7-8
+  16, 17                // D16-D17: Switches 9-10
+};
 static const unsigned long extDebounceMs = 50;
-static const uint8_t switchPins[4] = {6,9,10,11};  // D6, D9, D10, D11 for power outputs
 
-// Current sensing pin mapping - DEV1.3 board layout
-static const uint8_t currentSensePins[4] = {0, 1, 2, 3}; 
+// Power output pins (10 outputs total)
+static const uint8_t switchPins[NUM_CHANNELS] = {
+  6, 9, 10, 11,         // D6, D9, D10, D11: Outputs 1-4
+  18, 19,               // D18-D19: Outputs 5-6
+  20, 21,               // D20-D21: Outputs 7-8
+  22, 23                // D22-D23: Outputs 9-10
+};
+
+// Current sensing pin mapping - only 4 analog pins for direct sensing
+// IS1-IS4 use A0-A3, IS5-IS10 need to use ADS1115
+static const uint8_t currentSensePins[4] = {
+  A0, A1, A2, A3        // IS1-IS4
+}; 
 
 // -----------------------------------------------------------------------------
 // CRC-16 helper functions for EEPROM validation
@@ -129,9 +152,9 @@ static uint16_t calculateConfigCRC() {
 }
 
 // Read digital switch inputs directly
-static uint8_t getExtSwitchMask() {
-  uint8_t mask = 0;
-  for (uint8_t i = 0; i < 4; i++) {
+static uint16_t getExtSwitchMask() {
+  uint16_t mask = 0;
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
     if (digitalRead(extSwitchPins[i]) == LOW) {  // Inverted: LOW = pressed (button pulls to ground)
       mask |= (1 << i);
     }
@@ -142,7 +165,7 @@ static uint8_t getExtSwitchMask() {
 // Group shutdown on fault
 static void shutdownGroup(uint8_t ch) {
   uint8_t grp = outputGroup[ch];
-  for (uint8_t i=0;i<4;i++){
+  for (uint8_t i=0;i<NUM_CHANNELS;i++){
     if (outputGroup[i] == grp) {
       channelActive[i] = false;
       faultOvercurrent[i] = true;
@@ -157,7 +180,7 @@ static void applyPress(uint8_t ch, bool pressed) {
   String debugMsg = "applyPress CH" + String(ch+1) + " pressed=" + String(pressed) + " group=" + String(grp);
   LOG_STATE(debugMsg);
   
-  for (uint8_t i=0;i<4;i++){
+  for (uint8_t i=0;i<NUM_CHANNELS;i++){
     if (outputGroup[i] != grp) continue;
     bool isFaulted   = faultOvercurrent[i]||faultThermal[i];
     bool justCleared = clearedFault[i];
@@ -203,7 +226,7 @@ static void applyPress(uint8_t ch, bool pressed) {
 
 void PDMManager::init() {
   loadConfig();
-  for (uint8_t i=0;i<4;i++){
+  for (uint8_t i=0;i<NUM_CHANNELS;i++){
     pinMode(switchPins[i], OUTPUT);
     digitalWrite(switchPins[i], LOW);
     channelActive[i]=false;
@@ -214,30 +237,44 @@ void PDMManager::init() {
     currentLEDStates[i]=LED_STATE_OFF;
   }
   
-  // Initialize digital switch input pins (D0-D3)
-  for (uint8_t i=0;i<4;i++){
+  // Initialize digital switch input pins (all 10)
+  for (uint8_t i=0;i<NUM_CHANNELS;i++){
     pinMode(extSwitchPins[i], INPUT_PULLUP);  // Use internal pull-up resistors
   }
   
   // Analog pin configuration for new hardware:
-  // A0-A3: Current sensing for channels 0-3
-  // A4: Temperature sensor (corrected pin assignment)
-  // A5: Battery voltage sensing (corrected pin assignment)
-  pinMode(A4, INPUT);  // Temperature sensor
-  pinMode(A5, INPUT);  // Battery voltage
+  // A0-A3: Current sensing IS1-IS4 (only 4 analog channels available on direct pins)
+  // IS5-IS10, Temperature, Battery Voltage all on ADS1115 via I2C
+  pinMode(A0, INPUT);
+  pinMode(A1, INPUT);
+  pinMode(A2, INPUT);
+  pinMode(A3, INPUT);
+  
+  // Initialize ADS1115 for temp sensor, battery voltage, IS5-IS10 (6 total analog channels)
+  if (ads.begin()) {
+    adsInitialized = true;
+    // Set gain for appropriate voltage range
+    // GAIN_ONE = +/-4.096V (default), suitable for our sensors
+    ads.setGain(GAIN_ONE);
+    Serial.println(F("ADS1115 initialized successfully"));
+  } else {
+    adsInitialized = false;
+    Serial.println(F("ERROR: ADS1115 initialization failed!"));
+  }
+  
   lastUpdate = millis();
 }
 
 void PDMManager::processExternalInputs() {
-  static uint8_t  lastMask      = 0;
-  static uint8_t  candidateMask = 0;
+  static uint16_t  lastMask      = 0;
+  static uint16_t  candidateMask = 0;
   static unsigned long changeTime = 0;
-  static unsigned long pressStartExt[4] = {0,0,0,0};
-  static bool          longDone[4]     = {false,false,false,false};
+  static unsigned long pressStartExt[NUM_CHANNELS] = {0,0,0,0,0,0,0,0,0,0};
+  static bool          longDone[NUM_CHANNELS]     = {false,false,false,false,false,false,false,false,false,false};
   unsigned long now = millis();
 
   // Check for fault-induced button timing resets
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
     if (resetButtonTiming[i]) {
       pressStartExt[i] = now; // Reset press start time to now
       longDone[i] = false;    // Allow new long press detection
@@ -247,7 +284,7 @@ void PDMManager::processExternalInputs() {
     }
   }
 
-  uint8_t raw = getExtSwitchMask();
+  uint16_t raw = getExtSwitchMask();
   if (raw != candidateMask) {
     candidateMask = raw;
     changeTime = now;
@@ -255,7 +292,7 @@ void PDMManager::processExternalInputs() {
   }
   if (now - changeTime < extDebounceMs) return;
 
-  for (uint8_t ch=0; ch<4; ch++) {
+  for (uint8_t ch=0; ch<NUM_CHANNELS; ch++) {
     bool nowP = candidateMask & (1<<ch);
     bool wasP = lastMask      & (1<<ch);
 
@@ -282,7 +319,7 @@ void PDMManager::processExternalInputs() {
       if (allowLongPress) {
         String msg = "Ext CH" + String(ch+1) + " LONG PRESS (fault clear)";
         LOG_INPUT(msg);
-        for (uint8_t i=0;i<4;i++){
+        for (uint8_t i=0;i<NUM_CHANNELS;i++){
           if (outputGroup[i]==outputGroup[ch]) {
             faultOvercurrent[i]=false;
             faultThermal[i]=false;
@@ -336,15 +373,18 @@ void PDMManager::update() {
   lastUpdate = now;
 
   // --- Enhanced temperature sensor reading with filtering ---
-  // TMP235A2DBZR: 10mV/°C, 500mV offset at 0°C
+  // TMP235A2DBZR: 10mV/°C, 500mV offset at 0°C on ADS1115 AIN0
   // Temperature (°C) = (Vout - 0.5V) / 0.01V
-  int rawT = analogRead(A4);  // Temperature sensor on A4
-  float vT = rawT / float(analogResolution) * voltageReference;
+  float vT = 0.0f;
+  if (adsInitialized) {
+    int16_t adcValue = ads.readADC_SingleEnded(0);  // AIN0 = Temperature sensor
+    vT = ads.computeVolts(adcValue);
+  }
   
   // Calculate temperature from TMP235A2DBZR
   // Valid output range: 0.1V (-40°C) to 2.0V (+150°C)
   float rawTemperature;
-  if (vT < 0.05f || vT > 2.1f) {
+  if (!adsInitialized || vT < 0.05f || vT > 2.1f) {
     // Sensor disconnected or out of range
     rawTemperature = -999.0f;  // Invalid marker
   } else {
@@ -437,7 +477,7 @@ void PDMManager::update() {
   #endif
   
   // --- Per-channel logic ---
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
     // 1) If we just cleared a fault, keep it off until next short-press
     if (clearedFault[i] && !channelActive[i]) {
       currentLEDStates[i] = LED_STATE_OFF;
@@ -569,7 +609,7 @@ void PDMManager::handleButtonState(uint8_t ch, bool pressed) {
     String msg = "CAN CH" + String(ch+1) + " PRESSED";
     LOG_INPUT(msg);
     if (getOutputMode(ch)==MODE_MOMENTARY) {
-      for (uint8_t i=0;i<4;i++){
+      for (uint8_t i=0;i<NUM_CHANNELS;i++){
         if (getOutputGroup(i)==grp) setChannel(i,true);
       }
     }
@@ -582,7 +622,7 @@ void PDMManager::handleButtonState(uint8_t ch, bool pressed) {
 
     if (dur>=1000) {
       LOG_INPUT(F("→ LONG PRESS, clearing faults"));
-      for (uint8_t i=0;i<4;i++){
+      for (uint8_t i=0;i<NUM_CHANNELS;i++){
         if (getOutputGroup(i)==grp) {
           faultOvercurrent[i]=false;
           faultThermal[i]=false;
@@ -592,7 +632,7 @@ void PDMManager::handleButtonState(uint8_t ch, bool pressed) {
     } else {
       if (getOutputMode(ch)==MODE_LATCH) {
         bool groupFault=false;
-        for (uint8_t i=0;i<4;i++){
+        for (uint8_t i=0;i<NUM_CHANNELS;i++){
           if (getOutputGroup(i)==grp &&
             (faultOvercurrent[i]||faultThermal[i])) {
             groupFault=true; break;
@@ -602,12 +642,12 @@ void PDMManager::handleButtonState(uint8_t ch, bool pressed) {
           LOG_INPUT(F("→ SHORT PRESS, toggling group"));
           // toggle entire group
           bool anyOn=false;
-          for (uint8_t i=0;i<4;i++){
+          for (uint8_t i=0;i<NUM_CHANNELS;i++){
             if (getOutputGroup(i)==grp && channelActive[i]) {
               anyOn=true; break;
             }
           }
-          for (uint8_t i=0;i<4;i++){
+          for (uint8_t i=0;i<NUM_CHANNELS;i++){
             if (getOutputGroup(i)==grp) {
               setChannel(i, !anyOn);
             }
@@ -618,7 +658,7 @@ void PDMManager::handleButtonState(uint8_t ch, bool pressed) {
       }
     }
     if (getOutputMode(ch)==MODE_MOMENTARY) {
-      for (uint8_t i=0;i<4;i++){
+      for (uint8_t i=0;i<NUM_CHANNELS;i++){
         if (getOutputGroup(i)==grp) setChannel(i,false);
       }
     }
@@ -627,18 +667,18 @@ void PDMManager::handleButtonState(uint8_t ch, bool pressed) {
   lastState[ch]=pressed;
 }
 
-void PDMManager::getLEDStates(LEDState s[4]) {
-  for (uint8_t i=0;i<4;i++) s[i]=currentLEDStates[i];
+void PDMManager::getLEDStates(LEDState s[NUM_CHANNELS]) {
+  for (uint8_t i=0;i<NUM_CHANNELS;i++) s[i]=currentLEDStates[i];
 }
 
 bool PDMManager::isChannelActive(uint8_t ch) {
-  if (ch >= 4) return false;
+  if (ch >= NUM_CHANNELS) return false;
   return channelActive[ch];
 }
 
 void PDMManager::saveConfig() {
   EEPROM.put(ADDR_MAGIC, EEPROM_MAGIC);
-  for (uint8_t i=0;i<4;i++){
+  for (uint8_t i=0;i<NUM_CHANNELS;i++){
     EEPROM.put(ADDR_OC_ARRAY         + i*sizeof(float),          ocThresholds[i]);
     EEPROM.put(ADDR_INRUSH_ARRAY     + i*sizeof(float),      inrushThresholds[i]);
     EEPROM.put(ADDR_INRUSHTIME_ARRAY + i*sizeof(unsigned long), inrushTimeLimits[i]);
@@ -646,7 +686,7 @@ void PDMManager::saveConfig() {
   }
   EEPROM.put(ADDR_TEMPWARN, tempWarnThreshold);
   EEPROM.put(ADDR_TEMPTTRIP,tempTripThreshold);
-  for (uint8_t i=0;i<4;i++){
+  for (uint8_t i=0;i<NUM_CHANNELS;i++){
     EEPROM.put(ADDR_MODE_ARRAY   + i, (uint8_t)outputMode[i]);
     EEPROM.put(ADDR_GROUP_ARRAY  + i, (uint8_t)outputGroup[i]);
   }
@@ -667,7 +707,7 @@ void PDMManager::loadConfig() {
   uint16_t m=0; EEPROM.get(ADDR_MAGIC,m);
   if (m==EEPROM_MAGIC) {
     // Load configuration data
-    for (uint8_t i=0;i<4;i++){
+    for (uint8_t i=0;i<NUM_CHANNELS;i++){
       EEPROM.get(ADDR_OC_ARRAY         + i*sizeof(float),          ocThresholds[i]);
       EEPROM.get(ADDR_INRUSH_ARRAY     + i*sizeof(float),      inrushThresholds[i]);
       EEPROM.get(ADDR_INRUSHTIME_ARRAY + i*sizeof(unsigned long), inrushTimeLimits[i]);
@@ -675,7 +715,7 @@ void PDMManager::loadConfig() {
     }
     EEPROM.get(ADDR_TEMPWARN,  tempWarnThreshold);
     EEPROM.get(ADDR_TEMPTTRIP, tempTripThreshold);
-    for (uint8_t i=0;i<4;i++){
+    for (uint8_t i=0;i<NUM_CHANNELS;i++){
       uint8_t mm, gg;
       EEPROM.get(ADDR_MODE_ARRAY + i, mm);
       EEPROM.get(ADDR_GROUP_ARRAY+ i, gg);
@@ -780,14 +820,37 @@ void PDMManager::setKeypadNodeID(uint8_t id) {
 uint8_t PDMManager::getKeypadNodeID() { return keypadNodeID; }
 
 float PDMManager::readBatteryVoltage() {
-  int raw=analogRead(A5);  // Battery voltage sensing moved to A5 on new hardware
-  float v = raw/float(analogResolution)*voltageReference;
-  return v * 4.0f;  // divider 15k/5k = (15k+5k)/5k = 4.0
+  if (!adsInitialized) return 0.0f;
+  
+  // Battery voltage on ADS1115 AIN1 via 22k/5k divider
+  // Divider ratio = (22k + 5k) / 5k = 5.4
+  int16_t adcValue = ads.readADC_SingleEnded(1);  // AIN1 = Battery voltage
+  float v = ads.computeVolts(adcValue);
+  return v * 5.4f * vbattCalibration;  // Apply divider ratio and calibration
 }
+
 float PDMManager::getChannelCurrent(uint8_t ch) {
-  int raw=analogRead(A0 + currentSensePins[ch]);  // Use mapped pins
-  float v=raw/float(analogResolution)*voltageReference;
-  return v/ris*kILIS;
+  if (ch >= NUM_CHANNELS) return 0.0f;
+  
+  // Channels 0-3 use Arduino analog pins A0-A3
+  // Channels 4-9 would need ADS1115, but we only have 4 ADS channels (AIN0-AIN3)
+  // AIN0=temp, AIN1=vbatt, AIN2-AIN3 available for IS5-IS6
+  // For now, only channels 0-5 supported fully
+  
+  if (ch < 4) {
+    // Use Arduino built-in ADC
+    int raw=analogRead(currentSensePins[ch]);  // Use mapped pins
+    float v=raw/float(analogResolution)*voltageReference;
+    return v/ris*kILIS;
+  } else if (ch < 6 && adsInitialized) {
+    // Channels 4-5 use ADS1115 AIN2-AIN3
+    int16_t adcValue = ads.readADC_SingleEnded(ch - 2);  // ch4->AIN2, ch5->AIN3
+    float v = ads.computeVolts(adcValue);
+    return v/ris*kILIS;
+  } else {
+    // Channels 6-9 not yet implemented (would need second ADS1115 or multiplexer)
+    return 0.0f;
+  }
 }
 bool PDMManager::isUndercurrentWarning(uint8_t ch) { 
   return warningUndercurrent[ch];
@@ -804,7 +867,7 @@ bool  PDMManager::isTempSensorError()   { return lastSensorErr; }
 
 void PDMManager::printConfig() {
   Serial.println(F("---- PDM Configuration ----"));
-  for (uint8_t i=0;i<4;i++){
+  for (uint8_t i=0;i<NUM_CHANNELS;i++){
     Serial.print(F("CH"));Serial.print(i+1);
     Serial.print(F(": OC="));Serial.print(ocThresholds[i],2); Serial.print(F("A"));
     Serial.print(F(", INR="));Serial.print(inrushThresholds[i],2); Serial.print(F("A/"));

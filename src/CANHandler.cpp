@@ -7,8 +7,8 @@ static const unsigned long WATCHDOG_TIMEOUT_MS = 1500;
 static unsigned long lastDigOutTime = 0;
 
 // CAN Digital Output state tracking
-static bool lastDig[4] = {false,false,false,false};
-static bool lockDig[4] = {false,false,false,false};
+static bool lastDig[NUM_CHANNELS] = {false,false,false,false,false,false,false,false,false,false};
+static bool lockDig[NUM_CHANNELS] = {false,false,false,false,false,false,false,false,false,false};
 
 unsigned long CANHandler::lastHeartbeatMs = 0;
 bool         CANHandler::_canOK          = true;
@@ -75,7 +75,7 @@ void CANHandler::process() {
   // 1) digital‐out timeout: if no DIGOUT msg in 2 s, shut all channels off
   // Only applies when last input was CAN DIGOUT
   if (lastInputMode == INPUT_MODE_CAN_DIGOUT && millis() - lastDigOutTime > 2000) {
-    for (uint8_t ch = 0; ch < 4; ch++) {
+    for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
       PDMManager::setChannel(ch, false);
       lastDig[ch] = false;  // Reset state so new ON commands will be recognized
     }
@@ -99,15 +99,20 @@ void CANHandler::process() {
     {
         uint16_t digId = PDMManager::getDigitalOutID();
         if (id == digId && len >= 8) {
-          bool newDig[4] = {
-            (buf[0] & 0x01),
-            (buf[2] & 0x01),
-            (buf[4] & 0x01),
-            (buf[6] & 0x01)
-          };
+          // Parse digital outputs - 10 channels stored as bits in buf[0] (lower 8) and buf[1] (upper 2)
+          bool newDig[NUM_CHANNELS];
+          for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+            if (ch < 8) {
+              newDig[ch] = (buf[ch] & 0x01);  // Channels 0-7 in buf[0]-buf[7]
+            } else {
+              // Channels 8-9 could be in subsequent bytes if protocol supports it
+              // For now, only handle first 8 channels via standard DIGOUT
+              newDig[ch] = false;
+            }
+          }
 
           // Rising edge → try to turn ON (unless locked by a fault)
-          for (uint8_t ch = 0; ch < 4; ch++) {
+          for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
             if (newDig[ch] && !lastDig[ch] && !lockDig[ch]) {
               PDMManager::setChannel(ch, true);
               lastInputMode = INPUT_MODE_CAN_DIGOUT;  // Track input source
@@ -127,7 +132,7 @@ void CANHandler::process() {
           _digOutWatchdogTriggered = false;  // Clear watchdog flag when valid message received
 
           // capture any over-current/inrush fault and lock that channel
-          for (uint8_t ch = 0; ch < 4; ch++) {
+          for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
             if (PDMManager::isOvercurrentFault(ch)) {
               lockDig[ch] = true;
             }
@@ -145,6 +150,8 @@ void CANHandler::process() {
 
       // a) key-state PDO
       if (id == pdoID && len >= 1) {
+        // Keypad only has 4 buttons, but PDM now has 10 channels
+        // Map keypad buttons 0-3 to channels 0-3 for now
         for (uint8_t ch = 0; ch < 4; ch++) {
           bool pressed = buf[0] & (1 << ch);
           PDMManager::handleButtonState(ch, pressed);
@@ -241,40 +248,89 @@ void CANHandler::sendTelemetry() {
   last = millis();
 
   uint8_t pdmID = PDMManager::getPDMNodeID();
-  // base 0x380 + NodeID → 0x395 for NodeID=0x15
-  uint32_t cob = 0x380 + pdmID;
+  
+  // Send first message: channels 0-3, temp, faults, battery voltage
+  {
+    uint32_t cob = 0x380 + pdmID;  // base 0x380 + NodeID
+    uint8_t data[8] = {0};
 
-  uint8_t data[8] = {0};
+    // 1) Channel currents 0-3 (bytes 0..3), 0.2 A/bit
+    for (uint8_t i = 0; i < 4; i++) {
+      float iA = PDMManager::getChannelCurrent(i);
+      int v = int(round(iA * 5.0f));  // scale: val = current * 5
+      data[i] = (uint8_t) constrain(v, 0, 255);
+    }
 
-  // 1) Channel currents (bytes 0..3), 0.2 A/bit
-  for (uint8_t i = 0; i < 4; i++) {
-    float iA = PDMManager::getChannelCurrent(i);
-    // scale: val = current / 0.2 = current * 5
-    int v = int(round(iA * 5.0f));
-    data[i] = (uint8_t) constrain(v, 0, 255);
+    // 2) Board temperature (byte 4), 1 degC per bit
+    float T = PDMManager::getLastTemperature();
+    data[4] = (uint8_t) constrain(int(round(T)), 0, 255);
+
+    // 3) Fault mask channels 0-3 (byte 5): bits 0–3 undercurrent, bits 4–7 overcurrent
+    uint8_t flags = 0;
+    for (uint8_t i = 0; i < 4; i++) {
+      if (PDMManager::isUndercurrentWarning(i))  flags |= 1 << i;
+      if (PDMManager::isOvercurrentFault(i))     flags |= 1 << (i + 4);
+    }
+    data[5] = flags;
+
+    // 4) Battery voltage (bytes 6..7), 0.001 V/bit, little-endian
+    float vb = PDMManager::readBatteryVoltage();  
+    uint16_t vbit = uint16_t(round(vb * 1000.0f));
+    data[6] = vbit & 0xFF;
+    data[7] = vbit >> 8;
+
+    sendMessage(cob, data, 8);
   }
+  
+  // Send second message: channels 4-7 and faults
+  {
+    uint32_t cob = 0x390 + pdmID;  // base 0x390 + NodeID for second telemetry frame
+    uint8_t data[8] = {0};
 
-  // 2) Board temperature (byte 4), 1 degC per bit
-  // assume PDMManager::getLastTemperature() returns float °C
-  float T = PDMManager::getLastTemperature();
-  data[4] = (uint8_t) constrain(int(round(T)), 0, 255);
+    // 1) Channel currents 4-7 (bytes 0..3), 0.2 A/bit
+    for (uint8_t i = 4; i < 8; i++) {
+      float iA = PDMManager::getChannelCurrent(i);
+      int v = int(round(iA * 5.0f));
+      data[i-4] = (uint8_t) constrain(v, 0, 255);
+    }
 
-  // 3) Fault mask (byte 5): bits 0–3 undercurrent, bits 4–7 overcurrent
-  uint8_t flags = 0;
-  for (uint8_t i = 0; i < 4; i++) {
-    if (PDMManager::isUndercurrentWarning(i))  flags |= 1 << i;
-    if (PDMManager::isOvercurrentFault(i))     flags |= 1 << (i + 4);
+    // 2) Fault mask channels 4-7 (byte 4): bits 0–3 undercurrent, bits 4–7 overcurrent
+    uint8_t flags = 0;
+    for (uint8_t i = 0; i < 4; i++) {
+      if (PDMManager::isUndercurrentWarning(i+4))  flags |= 1 << i;
+      if (PDMManager::isOvercurrentFault(i+4))     flags |= 1 << (i + 4);
+    }
+    data[4] = flags;
+
+    // bytes 5-7 reserved for future use
+    
+    sendMessage(cob, data, 8);
   }
-  data[5] = flags;
+  
+  // Send third message: channels 8-9 and faults
+  {
+    uint32_t cob = 0x3A0 + pdmID;  // base 0x3A0 + NodeID for third telemetry frame
+    uint8_t data[8] = {0};
 
-  // 4) Battery voltage (bytes 6..7), 0.001 V/bit, little-endian
-  float vb = PDMManager::readBatteryVoltage();  
-  uint16_t vbit = uint16_t(round(vb * 1000.0f));
-  data[6] = vbit & 0xFF;
-  data[7] = vbit >> 8;
+    // 1) Channel currents 8-9 (bytes 0..1), 0.2 A/bit
+    for (uint8_t i = 8; i < NUM_CHANNELS; i++) {
+      float iA = PDMManager::getChannelCurrent(i);
+      int v = int(round(iA * 5.0f));
+      data[i-8] = (uint8_t) constrain(v, 0, 255);
+    }
 
-  // finally, transmit
-  sendMessage(cob, data, 8);
+    // 2) Fault mask channels 8-9 (byte 2): bits 0–1 undercurrent, bits 4–5 overcurrent
+    uint8_t flags = 0;
+    for (uint8_t i = 0; i < 2; i++) {
+      if (PDMManager::isUndercurrentWarning(i+8))  flags |= 1 << i;
+      if (PDMManager::isOvercurrentFault(i+8))     flags |= 1 << (i + 4);
+    }
+    data[2] = flags;
+
+    // bytes 3-7 reserved for future use
+    
+    sendMessage(cob, data, 8);
+  }
 }
 
 void CANHandler::setLastInputMode(InputMode mode) {
@@ -298,7 +354,7 @@ void CANHandler::checkWatchdog() {
       // Only monitor CAN heartbeat if last input was from CAN keypad
       if (lastHeartbeatMs != 0 && now - lastHeartbeatMs > WATCHDOG_TIMEOUT_MS) {
         if (_canOK) {
-          for (uint8_t i = 0; i < 4; i++) {
+          for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
             PDMManager::setChannel(i, false);
           }
           LOG_STATE(F("Watchdog: CAN keypad lost → outputs OFF"));
