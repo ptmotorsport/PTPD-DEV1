@@ -10,7 +10,7 @@ static unsigned long lastCANLedMs = 0;
 static const unsigned long CAN_LED_PERIOD = 100;  // 10 Hz (was 67ms ≈15Hz)
 LEDState keypadStates[NUM_CHANNELS];
 
-#define NEOPIXEL_PIN_1   7
+#define NEOPIXEL_PIN_1   9
 #define NEOPIXEL_PIN_2   8
 #define NEOPIXEL_COUNT   8
 

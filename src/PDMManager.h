@@ -71,6 +71,12 @@ public:
   // Telemetry helpers
   static float readBatteryVoltage();
   static float getChannelCurrent(uint8_t ch);
+  static bool  isADSReady();
+  static bool  readCurrentSenseRaw(uint8_t ch, int16_t& raw, float& volts);
+  static bool  readSwitchInputRaw(uint8_t ch, bool& pressed);
+  static uint16_t readSwitchInputMaskRaw();
+  static bool  readADSRaw(uint8_t channel, int16_t& raw, float& volts);
+  static bool  readTemperatureRaw(int16_t& raw, float& volts, float& celsius);
   static bool  isUndercurrentWarning(uint8_t ch);
   static bool  isOvercurrentFault(uint8_t ch);
   static bool  isThermalFault(uint8_t ch);

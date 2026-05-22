@@ -91,46 +91,37 @@ void UARTHandler::process() {
   }
 
   else if (cmd == "TEMPRAW") {
-    // Show raw temperature sensor data for LM335 with 2kΩ pull-up
-    int rawT = analogRead(A4);
-    float vT = rawT / 1023.0f * 5.0f;     // Voltage at A4
-    
-    // LM335 with 2kΩ pull-up voltage divider calculation
-    float resistance_lm335 = (2000.0f * vT) / (5.0f - vT);
-    float kelvin = resistance_lm335 / 10.0f;  // LM335: R ≈ 10Ω per Kelvin
-    float celsius = kelvin - 273.15f;
-    
-    Serial.print("LM335 + 2kΩ pullup - Raw: ");
-    Serial.print(rawT);
-    Serial.print("/1023, Voltage: ");
-    Serial.print(vT, 3);
-    Serial.println("V");
-    
-    Serial.print("LM335 Resistance: ");
-    Serial.print(resistance_lm335, 0);
-    Serial.print("Ω, Temperature: ");
-    Serial.print(celsius, 1);
-    Serial.println("°C");
-    
-    // Expected at 25°C: R=2980Ω, V=2.99V, Raw=611
-    Serial.println("Expected 25°C: R=2980Ω, V=2.99V, Raw=611");
+    // Show raw TMP235 temperature data from ADS1115 AIN0.
+    int16_t rawT = 0;
+    float vT = 0.0f;
+    float celsius = 0.0f;
+    if (!PDMManager::readTemperatureRaw(rawT, vT, celsius)) {
+      Serial.println("ERR: ADS1115 unavailable - cannot read temperature");
+    } else {
+      Serial.print("TMP235 on ADS AIN0 - Raw: ");
+      Serial.print(rawT);
+      Serial.print(", Voltage: ");
+      Serial.print(vT, 3);
+      Serial.print("V, Temperature: ");
+      Serial.print(celsius, 1);
+      Serial.println("C");
+    }
   }
 
   else if (cmd == "TEMPDETAIL") {
     // Show detailed temperature sensor debug information
     Serial.println(F("=== Temperature Sensor Detail ==="));
-    
-    // Read raw values
-    int rawT = analogRead(A4);
-    float vT = rawT / 1023.0f * 5.0f;
-    float resistance = (2000.0f * vT) / (5.0f - vT);
-    float kelvin = resistance / 10.0f;
-    float rawTemp = kelvin - 273.15f;
-    
-    Serial.print(F("Raw ADC: ")); Serial.print(rawT); Serial.print(F("/1023"));
-    Serial.print(F(", Voltage: ")); Serial.print(vT, 3); Serial.println(F("V"));
-    Serial.print(F("LM335 Resistance: ")); Serial.print(resistance, 1); Serial.println(F(" ohms"));
-    Serial.print(F("Raw Temperature: ")); Serial.print(rawTemp, 2); Serial.println(F("°C"));
+
+    int16_t rawT = 0;
+    float vT = 0.0f;
+    float rawTemp = 0.0f;
+    if (!PDMManager::readTemperatureRaw(rawT, vT, rawTemp)) {
+      Serial.println(F("ERR: ADS1115 unavailable - cannot read temperature"));
+    } else {
+      Serial.print(F("Raw ADS: ")); Serial.print(rawT);
+      Serial.print(F(", Voltage: ")); Serial.print(vT, 3); Serial.println(F("V"));
+      Serial.print(F("Raw Temperature: ")); Serial.print(rawTemp, 2); Serial.println(F("C"));
+    }
     Serial.print(F("Filtered Temperature: ")); Serial.print(PDMManager::getLastTemperature(), 2); Serial.println(F("°C"));
     Serial.print(F("Sensor Error: ")); Serial.println(PDMManager::isTempSensorError() ? "YES" : "NO");
     Serial.print(F("Battery Voltage: ")); Serial.print(PDMManager::readBatteryVoltage(), 2); Serial.println(F("V"));
@@ -138,15 +129,49 @@ void UARTHandler::process() {
   }
 
   else if (cmd == "ANALOGRAW") {
-    // Show all analog readings for debugging
+    // Show raw current-sense ADC readings for this hardware without touching I2C pins A4/A5.
     Serial.println("Raw Analog Readings:");
-    for (int i = 0; i <= 5; i++) {
-      int raw = analogRead(A0 + i);
-      float voltage = raw / 1023.0f * 5.0f;
-      Serial.print("A"); Serial.print(i); 
+
+    static const char* labels[NUM_CHANNELS] = {
+      "IS1", "IS2", "IS3", "IS4", "IS5", "IS6", "IS7", "IS8", "IS9", "IS10"
+    };
+
+    for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+      int16_t raw = 0;
+      float voltage = 0.0f;
+      if (!PDMManager::readCurrentSenseRaw(ch, raw, voltage)) {
+        Serial.print(labels[ch]);
+        Serial.println(": ERR");
+        continue;
+      }
+
+      Serial.print(labels[ch]);
       Serial.print(": "); Serial.print(raw);
       Serial.print(" ("); Serial.print(voltage, 3); Serial.println("V)");
     }
+  }
+
+  else if (cmd == "SWITCHRAW") {
+    Serial.println("Raw Switch Readings:");
+    for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
+      bool pressed = false;
+      if (!PDMManager::readSwitchInputRaw(ch, pressed)) {
+        Serial.print("SW"); Serial.print(ch + 1); Serial.println(": ERR");
+        continue;
+      }
+
+      Serial.print("SW"); Serial.print(ch + 1); Serial.print(": ");
+      Serial.println(pressed ? "PRESSED" : "RELEASED");
+    }
+
+    uint16_t mask = PDMManager::readSwitchInputMaskRaw();
+    Serial.print("Mask: 0b");
+    for (int8_t bit = NUM_CHANNELS - 1; bit >= 0; bit--) {
+      Serial.print((mask & (1 << bit)) ? '1' : '0');
+    }
+    Serial.print(" (0x");
+    Serial.print(mask, HEX);
+    Serial.println(")");
   }
 
   else if (cmd=="SHOW"||cmd=="PRINT") {
@@ -282,9 +307,10 @@ void UARTHandler::process() {
     Serial.println(F("NODEID PDM|KEYPAD <id>  - Set node IDs"));
     Serial.println(F("DIGOUT <id>             - Set digital output CAN ID"));
     Serial.println(F("LOG <level>             - Set logging level (0=Normal, 1=State, 2=+CAN)"));
-    Serial.println(F("TEMPRAW                 - Show raw temperature sensor data"));
-    Serial.println(F("TEMPDETAIL              - Show detailed temperature sensor debug info"));
-    Serial.println(F("ANALOGRAW               - Show all analog pin readings"));
+    Serial.println(F("TEMPRAW                 - Show raw TMP235 reading from ADS1115"));
+    Serial.println(F("TEMPDETAIL              - Show detailed ADS temperature debug info"));
+    Serial.println(F("ANALOGRAW               - Show raw IS1-IS10 current-sense ADC readings"));
+    Serial.println(F("SWITCHRAW               - Show raw SW1-SW10 input states"));
     Serial.println(F("SHOW/PRINT              - Display configuration"));
     Serial.println(F("STATUS                  - Display system status"));
     Serial.println(F("SAVE                    - Save config to EEPROM"));

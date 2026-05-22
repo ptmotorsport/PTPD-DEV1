@@ -4,6 +4,10 @@
 #include <EEPROM.h>
 #include <Arduino.h>
 #include <Adafruit_ADS1X15.h>
+#include "bsp_api.h"
+#include "r_adc.h"
+#include "hal_data.h"
+#include "r_ioport.h"
 
 // -----------------------------------------------------------------------------
 // ADS1115 I2C ADC for temperature, battery voltage, IS9, IS10
@@ -56,7 +60,8 @@ uint16_t PDMManager::digitalOutCobId = 0x680;
 // -----------------------------------------------------------------------------
 // ADC scaling - Arduino Uno R4 Minima
 static const float   voltageReference = 5.0f;   // Arduino Uno R4 Minima uses 5V reference for most analog pins
-static const int     analogResolution = 1023;   // Arduino Uno R4 Minima is 10-bit ADC (0-1023)
+static const int     analogResolution = 1023;   // Arduino ADC legacy scale (10-bit paths)
+static const int     currentSenseAdcMax = 16383; // Direct FSP ADC is configured for 14-bit
 static const float   ris              = 1000.0f;
 static const float   kILIS            = 8200.0f; // Current sensor gain factor for DEV1.3 board (BTS443P)
 
@@ -89,27 +94,120 @@ static const uint8_t maxBadReadings         = 3;      // Require multiple bad re
 
 // -----------------------------------------------------------------------------
 // Digital switch input pins (10 switches total)
-static const uint8_t extSwitchPins[NUM_CHANNELS] = {
-  0, 1, 2, 3,           // D0-D3: Switches 1-4
-  A4, A5,               // A4-A5: Switches 5-6 (analog pins used as digital)
-  14, 15,               // D14-D15: Switches 7-8
-  16, 17                // D16-D17: Switches 9-10
+// Mapping provided by hardware pinout:
+// SW1=P408, SW2=P206, SW3=P205, SW4=P204, SW5=P302,
+// SW6=P012, SW7=P104, SW8=P105, SW9=P113, SW10=P301.
+static const bsp_io_port_pin_t extSwitchPins[NUM_CHANNELS] = {
+  BSP_IO_PORT_04_PIN_08,
+  BSP_IO_PORT_02_PIN_06,
+  BSP_IO_PORT_02_PIN_05,
+  BSP_IO_PORT_02_PIN_04,
+  BSP_IO_PORT_03_PIN_02,
+  BSP_IO_PORT_00_PIN_12,
+  BSP_IO_PORT_01_PIN_04,
+  BSP_IO_PORT_01_PIN_05,
+  BSP_IO_PORT_01_PIN_13,
+  BSP_IO_PORT_03_PIN_01
 };
 static const unsigned long extDebounceMs = 50;
 
 // Power output pins (10 outputs total)
-static const uint8_t switchPins[NUM_CHANNELS] = {
-  6, 9, 10, 11,         // D6, D9, D10, D11: Outputs 1-4
-  18, 19,               // D18-D19: Outputs 5-6
-  20, 21,               // D20-D21: Outputs 7-8
-  22, 23                // D22-D23: Outputs 9-10
+// OUT1=P409, OUT2=P410, OUT3=P411, OUT4=P402, OUT5=P401,
+// OUT6=P400, OUT7=P106, OUT8=P107, OUT9=P112, OUT10=P109.
+static const bsp_io_port_pin_t switchPins[NUM_CHANNELS] = {
+  BSP_IO_PORT_04_PIN_09,
+  BSP_IO_PORT_04_PIN_10,
+  BSP_IO_PORT_04_PIN_11,
+  BSP_IO_PORT_04_PIN_02,
+  BSP_IO_PORT_04_PIN_01,
+  BSP_IO_PORT_04_PIN_00,
+  BSP_IO_PORT_01_PIN_06,
+  BSP_IO_PORT_01_PIN_07,
+  BSP_IO_PORT_01_PIN_12,
+  BSP_IO_PORT_01_PIN_09
 };
 
-// Current sensing pin mapping - only 4 analog pins for direct sensing
-// IS1-IS4 use A0-A3, IS5-IS10 need to use ADS1115
-static const uint8_t currentSensePins[4] = {
-  A0, A1, A2, A3        // IS1-IS4
-}; 
+// Current sensing on MCU ADC: IS1-IS8 (raw RA4M1 channels).
+// Corrected mapping:
+// IS1=P000/AN00, IS2=P001/AN01, IS3=P002/AN02, IS4=P003/AN03,
+// IS5=P004/AN04, IS6=P011/AN06, IS7=P014/AN09, IS8=P015/AN10.
+static const bsp_io_port_pin_t currentSensePins[8] = {
+  BSP_IO_PORT_00_PIN_00,  // IS1
+  BSP_IO_PORT_00_PIN_01,  // IS2
+  BSP_IO_PORT_00_PIN_02,  // IS3
+  BSP_IO_PORT_00_PIN_03,  // IS4
+  BSP_IO_PORT_00_PIN_04,  // IS5
+  BSP_IO_PORT_00_PIN_11,  // IS6
+  BSP_IO_PORT_00_PIN_14,  // IS7
+  BSP_IO_PORT_00_PIN_15   // IS8
+};
+
+static const uint8_t currentSenseChannels[8] = {
+  0, 1, 2, 3, 4, 6, 9, 10
+};
+
+static adc_instance_ctrl_t currentSenseAdcCtrl;
+static adc_cfg_t currentSenseAdcCfg;
+static adc_channel_cfg_t currentSenseAdcChannelCfg;
+static adc_extended_cfg_t currentSenseAdcExtCfg;
+static bool currentSenseAdcReady = false;
+
+static bool initCurrentSenseADC() {
+  memset(&currentSenseAdcCtrl, 0, sizeof(currentSenseAdcCtrl));
+  memset(&currentSenseAdcCfg, 0, sizeof(currentSenseAdcCfg));
+  memset(&currentSenseAdcChannelCfg, 0, sizeof(currentSenseAdcChannelCfg));
+  memset(&currentSenseAdcExtCfg, 0, sizeof(currentSenseAdcExtCfg));
+
+  for (uint8_t i = 0; i < 8; i++) {
+    pinPeripheral(currentSensePins[i], (uint32_t)IOPORT_CFG_ANALOG_ENABLE);
+  }
+
+  currentSenseAdcCfg.unit = 0;
+  currentSenseAdcCfg.mode = ADC_MODE_SINGLE_SCAN;
+  currentSenseAdcCfg.resolution = ADC_RESOLUTION_14_BIT;
+  currentSenseAdcCfg.alignment = ADC_ALIGNMENT_RIGHT;
+  currentSenseAdcCfg.trigger = ADC_TRIGGER_SOFTWARE;
+  currentSenseAdcCfg.p_callback = nullptr;
+  currentSenseAdcCfg.p_context = nullptr;
+  currentSenseAdcCfg.p_extend = &currentSenseAdcExtCfg;
+  currentSenseAdcCfg.scan_end_irq = FSP_INVALID_VECTOR;
+  currentSenseAdcCfg.scan_end_ipl = 12;
+  currentSenseAdcCfg.scan_end_b_irq = FSP_INVALID_VECTOR;
+  currentSenseAdcCfg.scan_end_b_ipl = 12;
+
+  currentSenseAdcExtCfg.add_average_count = ADC_ADD_OFF;
+  currentSenseAdcExtCfg.clearing = ADC_CLEAR_AFTER_READ_ON;
+  currentSenseAdcExtCfg.trigger_group_b = ADC_TRIGGER_SYNC_ELC;
+  currentSenseAdcExtCfg.double_trigger_mode = ADC_DOUBLE_TRIGGER_DISABLED;
+  currentSenseAdcExtCfg.adc_vref_control = ADC_VREF_CONTROL_AVCC0_AVSS0;
+  currentSenseAdcExtCfg.enable_adbuf = 0;
+  currentSenseAdcExtCfg.window_a_irq = FSP_INVALID_VECTOR;
+  currentSenseAdcExtCfg.window_a_ipl = 12;
+  currentSenseAdcExtCfg.window_b_irq = FSP_INVALID_VECTOR;
+  currentSenseAdcExtCfg.window_b_ipl = 12;
+
+  currentSenseAdcChannelCfg.sample_hold_states = 24;
+  currentSenseAdcChannelCfg.scan_mask = 0;
+  currentSenseAdcChannelCfg.scan_mask_group_b = 0;
+  currentSenseAdcChannelCfg.add_mask = 0;
+  currentSenseAdcChannelCfg.p_window_cfg = nullptr;
+  currentSenseAdcChannelCfg.priority_group_a = ADC_GROUP_A_PRIORITY_OFF;
+  currentSenseAdcChannelCfg.sample_hold_mask = 0;
+
+  for (uint8_t i = 0; i < 8; i++) {
+    currentSenseAdcChannelCfg.scan_mask |= (1UL << currentSenseChannels[i]);
+  }
+
+  if (R_ADC_Open(&currentSenseAdcCtrl, &currentSenseAdcCfg) != FSP_SUCCESS) {
+    return false;
+  }
+  if (R_ADC_ScanCfg(&currentSenseAdcCtrl, &currentSenseAdcChannelCfg) != FSP_SUCCESS) {
+    R_ADC_Close(&currentSenseAdcCtrl);
+    return false;
+  }
+
+  return true;
+}
 
 // -----------------------------------------------------------------------------
 // CRC-16 helper functions for EEPROM validation
@@ -151,11 +249,23 @@ static uint16_t calculateConfigCRC() {
   return crc;
 }
 
+static bool readSwitchPinLevel(bsp_io_port_pin_t pin) {
+  uint8_t port = (uint8_t)(pin >> 8);
+  uint8_t bit = (uint8_t)(pin & 0xFFU);
+  return R_PFS->PORT[port].PIN[bit].PmnPFS_b.PIDR ? true : false;
+}
+
+static void writeSwitchPinLevel(bsp_io_port_pin_t pin, bool high) {
+  R_IOPORT_PinWrite(&g_ioport_ctrl,
+                    pin,
+                    high ? BSP_IO_LEVEL_HIGH : BSP_IO_LEVEL_LOW);
+}
+
 // Read digital switch inputs directly
 static uint16_t getExtSwitchMask() {
   uint16_t mask = 0;
   for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
-    if (digitalRead(extSwitchPins[i]) == LOW) {  // Inverted: LOW = pressed (button pulls to ground)
+    if (!readSwitchPinLevel(extSwitchPins[i])) {  // Inverted: LOW = pressed (button pulls to ground)
       mask |= (1 << i);
     }
   }
@@ -169,7 +279,7 @@ static void shutdownGroup(uint8_t ch) {
     if (outputGroup[i] == grp) {
       channelActive[i] = false;
       faultOvercurrent[i] = true;
-      digitalWrite(switchPins[i], LOW);
+      writeSwitchPinLevel(switchPins[i], false);
     }
   }
 }
@@ -227,8 +337,10 @@ static void applyPress(uint8_t ch, bool pressed) {
 void PDMManager::init() {
   loadConfig();
   for (uint8_t i=0;i<NUM_CHANNELS;i++){
-    pinMode(switchPins[i], OUTPUT);
-    digitalWrite(switchPins[i], LOW);
+    R_IOPORT_PinCfg(&g_ioport_ctrl,
+                    switchPins[i],
+                    (uint32_t)(IOPORT_CFG_PORT_DIRECTION_OUTPUT | IOPORT_CFG_PORT_OUTPUT_LOW));
+    writeSwitchPinLevel(switchPins[i], false);
     channelActive[i]=false;
     faultOvercurrent[i]=false;
     warningUndercurrent[i]=false;
@@ -237,18 +349,20 @@ void PDMManager::init() {
     currentLEDStates[i]=LED_STATE_OFF;
   }
   
-  // Initialize digital switch input pins (all 10)
+  // Initialize digital switch input pins (all 10) with pull-ups.
   for (uint8_t i=0;i<NUM_CHANNELS;i++){
-    pinMode(extSwitchPins[i], INPUT_PULLUP);  // Use internal pull-up resistors
+    R_IOPORT_PinCfg(&g_ioport_ctrl,
+                    extSwitchPins[i],
+                    (uint32_t)(IOPORT_CFG_PORT_DIRECTION_INPUT | IOPORT_CFG_PULLUP_ENABLE));
   }
   
-  // Analog pin configuration for new hardware:
-  // A0-A3: Current sensing IS1-IS4 (only 4 analog channels available on direct pins)
-  // IS5-IS10, Temperature, Battery Voltage all on ADS1115 via I2C
-  pinMode(A0, INPUT);
-  pinMode(A1, INPUT);
-  pinMode(A2, INPUT);
-  pinMode(A3, INPUT);
+  // Initialize MCU ADC for IS1-IS8 (direct RA4M1 channels).
+  currentSenseAdcReady = initCurrentSenseADC();
+  if (currentSenseAdcReady) {
+    Serial.println(F("Current-sense ADC initialized (IS1-IS8)"));
+  } else {
+    Serial.println(F("ERROR: Current-sense ADC initialization failed!"));
+  }
   
   // Initialize ADS1115 for temp sensor, battery voltage, IS5-IS10 (6 total analog channels)
   if (ads.begin()) {
@@ -481,7 +595,7 @@ void PDMManager::update() {
     // 1) If we just cleared a fault, keep it off until next short-press
     if (clearedFault[i] && !channelActive[i]) {
       currentLEDStates[i] = LED_STATE_OFF;
-      digitalWrite(switchPins[i], LOW);
+      writeSwitchPinLevel(switchPins[i], false);
       continue;
     }
     
@@ -512,13 +626,14 @@ void PDMManager::update() {
       if (faultThermal[i])          currentLEDStates[i] = LED_STATE_RED_FLASH;
       else if (faultOvercurrent[i]) currentLEDStates[i] = LED_STATE_RED;
       else                          currentLEDStates[i] = LED_STATE_OFF;
-      digitalWrite(switchPins[i], LOW);
+      writeSwitchPinLevel(switchPins[i], false);
       continue;
     }
 
-    // 4) Measure load current - using corrected pin mapping for current sensing
-    int rawI = analogRead(A0 + currentSensePins[i]);  // Use mapped pins
-    float vI = rawI / float(analogResolution) * voltageReference;
+    // 4) Measure load current
+    int16_t rawI = 0;
+    float vI = 0.0f;
+    readCurrentSenseRaw(i, rawI, vI);
     float iA = vI / ris * kILIS;
 
     // undercurrent warning?
@@ -563,7 +678,7 @@ void PDMManager::update() {
     }
 
     // 7) Channel is safe to drive ON
-    digitalWrite(switchPins[i], HIGH);
+    writeSwitchPinLevel(switchPins[i], true);
 
     // 8) Set LED state based on current conditions
     if (faultOvercurrent[i]) {
@@ -593,7 +708,7 @@ void PDMManager::setChannel(uint8_t ch, bool on) {
     warningUndercurrent[ch]=false;
     clearedFault[ch]=false;
   }
-  digitalWrite(switchPins[ch], on?HIGH:LOW);
+  writeSwitchPinLevel(switchPins[ch], on);
 }
 
 void PDMManager::handleButtonState(uint8_t ch, bool pressed) {
@@ -829,28 +944,125 @@ float PDMManager::readBatteryVoltage() {
   return v * 5.4f * vbattCalibration;  // Apply divider ratio and calibration
 }
 
+bool PDMManager::isADSReady() {
+  return adsInitialized;
+}
+
+bool PDMManager::readSwitchInputRaw(uint8_t ch, bool& pressed) {
+  if (ch >= NUM_CHANNELS) {
+    pressed = false;
+    return false;
+  }
+
+  pressed = !readSwitchPinLevel(extSwitchPins[ch]);
+  return true;
+}
+
+uint16_t PDMManager::readSwitchInputMaskRaw() {
+  return getExtSwitchMask();
+}
+
+bool PDMManager::readCurrentSenseRaw(uint8_t ch, int16_t& raw, float& volts) {
+  if (ch < 8) {
+    if (!currentSenseAdcReady) {
+      raw = 0;
+      volts = 0.0f;
+      return false;
+    }
+
+    if (R_ADC_ScanStart(&currentSenseAdcCtrl) != FSP_SUCCESS) {
+      raw = 0;
+      volts = 0.0f;
+      return false;
+    }
+
+    adc_status_t status;
+    status.state = ADC_STATE_SCAN_IN_PROGRESS;
+    uint16_t timeout = 3000;
+    while (status.state == ADC_STATE_SCAN_IN_PROGRESS && timeout--) {
+      R_ADC_StatusGet(&currentSenseAdcCtrl, &status);
+    }
+
+    if (status.state == ADC_STATE_SCAN_IN_PROGRESS) {
+      raw = 0;
+      volts = 0.0f;
+      return false;
+    }
+
+    uint16_t sample = 0;
+    if (R_ADC_Read(&currentSenseAdcCtrl, (adc_channel_t)currentSenseChannels[ch], &sample) != FSP_SUCCESS) {
+      raw = 0;
+      volts = 0.0f;
+      return false;
+    }
+
+    raw = (int16_t)sample;
+    volts = (float)sample / (float)currentSenseAdcMax * voltageReference;
+    return true;
+  }
+
+  if (ch < 10 && adsInitialized) {
+    raw = ads.readADC_SingleEnded(ch - 6);
+    // Single-ended channels should not be negative; retry once then clamp.
+    if (raw < 0) {
+      raw = ads.readADC_SingleEnded(ch - 6);
+      if (raw < 0) {
+        raw = 0;
+      }
+    }
+    volts = ads.computeVolts(raw);
+    return true;
+  }
+
+  raw = 0;
+  volts = 0.0f;
+  return false;
+}
+
+bool PDMManager::readADSRaw(uint8_t channel, int16_t& raw, float& volts) {
+  if (!adsInitialized || channel > 3) {
+    raw = 0;
+    volts = 0.0f;
+    return false;
+  }
+
+  raw = ads.readADC_SingleEnded(channel);
+  // Single-ended ADS reads should not go negative; guard against noise/transients.
+  if (raw < 0) {
+    raw = ads.readADC_SingleEnded(channel);
+    if (raw < 0) {
+      raw = 0;
+    }
+  }
+  volts = ads.computeVolts(raw);
+  return true;
+}
+
+bool PDMManager::readTemperatureRaw(int16_t& raw, float& volts, float& celsius) {
+  celsius = -999.0f;
+
+  if (!readADSRaw(0, raw, volts)) {
+    return false;
+  }
+
+  // TMP235A2DBZR: T(°C) = (Vout - 0.5V) / 0.01V
+  celsius = (volts - 0.5f) / 0.01f;
+  return true;
+}
+
 float PDMManager::getChannelCurrent(uint8_t ch) {
   if (ch >= NUM_CHANNELS) return 0.0f;
   
-  // Channels 0-3 use Arduino analog pins A0-A3
-  // Channels 4-9 would need ADS1115, but we only have 4 ADS channels (AIN0-AIN3)
-  // AIN0=temp, AIN1=vbatt, AIN2-AIN3 available for IS5-IS6
-  // For now, only channels 0-5 supported fully
+  // Channels 0-7 use the MCU's raw ADC-capable ports.
+  // Channels 8-9 use ADS1115 AIN2-AIN3.
   
-  if (ch < 4) {
-    // Use Arduino built-in ADC
-    int raw=analogRead(currentSensePins[ch]);  // Use mapped pins
-    float v=raw/float(analogResolution)*voltageReference;
-    return v/ris*kILIS;
-  } else if (ch < 6 && adsInitialized) {
-    // Channels 4-5 use ADS1115 AIN2-AIN3
-    int16_t adcValue = ads.readADC_SingleEnded(ch - 2);  // ch4->AIN2, ch5->AIN3
-    float v = ads.computeVolts(adcValue);
-    return v/ris*kILIS;
-  } else {
-    // Channels 6-9 not yet implemented (would need second ADS1115 or multiplexer)
+  int16_t raw = 0;
+  float volts = 0.0f;
+  if (!readCurrentSenseRaw(ch, raw, volts)) {
     return 0.0f;
   }
+
+  return volts / ris * kILIS;
 }
 bool PDMManager::isUndercurrentWarning(uint8_t ch) { 
   return warningUndercurrent[ch];
